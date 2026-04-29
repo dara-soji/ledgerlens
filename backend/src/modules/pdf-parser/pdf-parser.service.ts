@@ -16,6 +16,14 @@ export type ProgressCallback = (
   message: string,
 ) => Promise<void>;
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getErrorStack(error: unknown): string | undefined {
+  return error instanceof Error ? error.stack : undefined;
+}
+
 /**
  * Utility function to clean JSON response from LLM
  * Removes markdown code blocks and extracts pure JSON
@@ -47,21 +55,43 @@ export class PdfParserService {
     @Inject(LLM_SERVICE) private readonly llmService: LLMServiceInterface,
   ) {}
 
-  private async extractTextFromPdf(
+  async extractTextFromPdf(
     pdfBuffer: Buffer,
-    progressCallback: ProgressCallback,
+    progressCallback?: ProgressCallback,
   ): Promise<string> {
-    await progressCallback(25, 'Extracting text from PDF');
+    await progressCallback?.(25, 'Starting PDF text extraction');
 
-    const data = await pdfParse(pdfBuffer);
-    const text = data.text;
+    this.logger.log(`Starting PDF text extraction (${pdfBuffer.length} bytes)`);
 
-    if (!text || text.trim().length === 0) {
-      throw new Error('No text content found in PDF');
+    try {
+      const data = await pdfParse(pdfBuffer);
+      const text = data.text;
+
+      if (!text || text.trim().length === 0) {
+        this.logger.warn(
+          `PDF text extraction completed with no text content (${pdfBuffer.length} bytes)`,
+        );
+        throw new Error('No text content found in PDF');
+      }
+
+      this.logger.log(
+        `PDF text extraction completed: ${text.length} characters extracted`,
+      );
+      await progressCallback?.(
+        35,
+        `PDF parsing completed: ${text.length} characters extracted`,
+      );
+      return text;
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+
+      this.logger.error(
+        `Failed to parse PDF file (${pdfBuffer.length} bytes): ${errorMessage}`,
+        getErrorStack(error),
+      );
+
+      throw new Error(`Failed to parse PDF file: ${errorMessage}`);
     }
-
-    await progressCallback(35, 'PDF text extraction completed');
-    return text;
   }
 
   async parseBankStatement(
@@ -109,10 +139,11 @@ export class PdfParserService {
 
       return validatedResult;
     } catch (error) {
-      this.logger.error('Error parsing bank statement:', error);
-
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
+      this.logger.error(
+        `Error parsing bank statement: ${errorMessage}`,
+        getErrorStack(error),
+      );
 
       if (errorMessage.includes('Invalid JSON format')) {
         throw new Error(`LLM returned invalid JSON format: ${errorMessage}`);
