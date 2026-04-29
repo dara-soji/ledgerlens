@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { PdfParserService, ProgressCallback } from './pdf-parser.service';
 import { LLMServiceInterface, LLM_SERVICE } from '../llm/llm.interface';
+import { BANK_STATEMENT_SYSTEM_INSTRUCTION } from '../../common/constants';
 
 jest.mock('pdf-parse', () => {
   return jest.fn();
@@ -11,6 +13,9 @@ describe('PdfParserService', () => {
   let mockLLMService: jest.Mocked<LLMServiceInterface>;
   let mockProgressCallback: jest.MockedFunction<ProgressCallback>;
   let mockPdfParse: jest.MockedFunction<any>;
+  let mockLoggerError: jest.SpyInstance;
+  let mockLoggerLog: jest.SpyInstance;
+  let mockLoggerWarn: jest.SpyInstance;
 
   const mockPdfBuffer = Buffer.from('mock pdf content');
   const mockPdfText =
@@ -31,6 +36,11 @@ describe('PdfParserService', () => {
 
   beforeEach(async () => {
     mockPdfParse = require('pdf-parse');
+    mockLoggerError = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    mockLoggerLog = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    mockLoggerWarn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 
     mockLLMService = {
       createResponse: jest.fn(),
@@ -53,6 +63,7 @@ describe('PdfParserService', () => {
 
   afterEach(() => {
     jest.clearAllMocks();
+    jest.restoreAllMocks();
   });
 
   describe('extractTextFromPdf', () => {
@@ -74,6 +85,9 @@ describe('PdfParserService', () => {
         35,
         `PDF parsing completed: ${mockPdfText.length} characters extracted`,
       );
+      expect(mockLoggerLog).toHaveBeenCalledWith(
+        `PDF text extraction completed: ${mockPdfText.length} characters extracted`,
+      );
     });
 
     it('should handle PDF parsing errors', async () => {
@@ -83,6 +97,29 @@ describe('PdfParserService', () => {
       await expect(
         service.extractTextFromPdf(mockPdfBuffer, mockProgressCallback),
       ).rejects.toThrow('Failed to parse PDF file');
+
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        'Failed to parse PDF file (16 bytes): PDF parsing failed',
+        expect.stringContaining('PDF parsing failed'),
+      );
+    });
+
+    it('should log empty PDF text extraction results', async () => {
+      mockPdfParse.mockResolvedValue({ text: '   ' });
+
+      await expect(
+        service.extractTextFromPdf(mockPdfBuffer, mockProgressCallback),
+      ).rejects.toThrow(
+        'Failed to parse PDF file: No text content found in PDF',
+      );
+
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        'PDF text extraction completed with no text content (16 bytes)',
+      );
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        'Failed to parse PDF file (16 bytes): No text content found in PDF',
+        expect.stringContaining('No text content found in PDF'),
+      );
     });
 
     it('should work without progress callback', async () => {
@@ -121,7 +158,7 @@ describe('PdfParserService', () => {
       });
 
       expect(mockLLMService.createResponse).toHaveBeenCalledWith(
-        'You are a financial document parser that extracts structured data from bank statements.',
+        BANK_STATEMENT_SYSTEM_INSTRUCTION,
         expect.stringContaining(mockPdfText),
       );
 
@@ -169,7 +206,7 @@ describe('PdfParserService', () => {
 
       await expect(
         service.parseBankStatement(mockPdfBuffer, mockProgressCallback),
-      ).rejects.toThrow('Failed to parse bank statement');
+      ).rejects.toThrow('LLM returned invalid JSON format');
     });
 
     it('should handle validation errors', async () => {
